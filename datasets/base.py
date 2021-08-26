@@ -19,9 +19,8 @@ class FaceEmbeddingDataset(Dataset):
         if transform is None:
             self.transforms = transforms.Compose([
                 transforms.Resize((256, 256)),
-                transforms.ColorJitter(0.2, 0.2, 0.2, 0.01),
                 transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ])
         else:
             self.transforms = transforms
@@ -43,14 +42,11 @@ class FaceEmbeddingDataset(Dataset):
 
     def __getitem__(self, idx):
         image_path = self.image_paths[idx]
-        Xs = cv2.imread(image_path)
-        Xs = Image.fromarray(Xs)
+        Xs = Image.open(image_path).convert('RGB')
 
         if random.random() > self.same_prob:
-            # image_path = random.choice(self.image_paths[random.randint(0, len(self.image_paths)-1)])
             image_path = random.choice(self.image_paths)
-            Xt = cv2.imread(image_path)
-            Xt = Image.fromarray(Xt)
+            Xt = Image.open(image_path).convert('RGB')
             same_person = 0
         else:
             Xt = Xs.copy()

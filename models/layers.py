@@ -40,29 +40,29 @@ class AADLayer(nn.Module):
     def __init__(self, h_inchannel, z_inchannel, z_id_size=256):
         super(AADLayer, self).__init__()
 
-        self.BNorm = nn.BatchNorm2d(h_inchannel)
+        self.norm= nn.BatchNorm2d(h_inchannel)
         self.conv_f = nn.Conv2d(h_inchannel, h_inchannel, kernel_size=3, stride=1, padding=1)
 
         self.sigmoid = nn.Sigmoid()
 
-        self.fc_1 = nn.Linear(z_id_size, h_inchannel)
-        self.fc_2 = nn.Linear(z_id_size, h_inchannel)
+        self.fc1 = nn.Linear(z_id_size, h_inchannel)
+        self.fc2 = nn.Linear(z_id_size, h_inchannel)
 
         self.conv1 = nn.Conv2d(z_inchannel, h_inchannel, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(z_inchannel, h_inchannel, kernel_size=3, stride=1, padding=1)
 
     def forward(self, h_in, z_att, z_id):
-        h_bar = self.BNorm(h_in)
+        h_bar = self.norm(h_in)
         m = self.sigmoid(self.conv_f(h_bar))
 
-        r_id = self.fc_1(z_id).unsqueeze(-1).unsqueeze(-1).expand_as(h_in)
-        beta_id = self.fc_2(z_id).unsqueeze(-1).unsqueeze(-1).expand_as(h_in)
+        r_id = self.fc1(z_id).unsqueeze(-1).unsqueeze(-1).expand_as(h_in)
+        beta_id = self.fc2(z_id).unsqueeze(-1).unsqueeze(-1).expand_as(h_in)
 
         i = r_id*h_bar + beta_id
 
-        r_att = self.conv1(z_att)
-        beta_att = self.conv2(z_att)
-        a = r_att * h_bar + beta_att
+        r_attr = self.conv1(z_att)
+        beta_attr = self.conv2(z_att)
+        a = r_attr * h_bar + beta_attr
 
         h_out = (1-m)*a + m*i
 
@@ -109,27 +109,27 @@ class AAD_ResBlk(nn.Module):
 class MultilevelAttributesEncoder(nn.Module):
     def __init__(self):
         super(MultilevelAttributesEncoder, self).__init__()
-        self.Encoder_channel = [3, 32, 64, 128, 256, 512, 1024, 1024]
-        self.Encoder = nn.ModuleDict({f'layer_{i}' : nn.Sequential(
-                nn.Conv2d(self.Encoder_channel[i], self.Encoder_channel[i+1], kernel_size=4, stride=2, padding=1),
-                nn.BatchNorm2d(self.Encoder_channel[i+1]),
+        self.encoder_channel = [3, 32, 64, 128, 256, 512, 1024, 1024]
+        self.encoder = nn.ModuleDict({f'layer_{i}' : nn.Sequential(
+                nn.Conv2d(self.encoder_channel[i], self.encoder_channel[i+1], kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(self.encoder_channel[i+1]),
                 nn.LeakyReLU(0.1)
             )for i in range(7)})
 
-        self.Decoder_inchannel = [1024, 2048, 1024, 512, 256, 128]
-        self.Decoder_outchannel = [1024, 512, 256, 128, 64, 32]
-        self.Decoder = nn.ModuleDict({f'layer_{i}' : nn.Sequential(
-                nn.ConvTranspose2d(self.Decoder_inchannel[i], self.Decoder_outchannel[i], kernel_size=4, stride=2, padding=1),
-                nn.BatchNorm2d(self.Decoder_outchannel[i]),
+        self.decoder_inchannel = [1024, 2048, 1024, 512, 256, 128]
+        self.decoder_outchannel = [1024, 512, 256, 128, 64, 32]
+        self.decoder = nn.ModuleDict({f'layer_{i}' : nn.Sequential(
+                nn.ConvTranspose2d(self.decoder_inchannel[i], self.decoder_outchannel[i], kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(self.decoder_outchannel[i]),
                 nn.LeakyReLU(0.1)
             )for i in range(6)})
 
-        self.Upsample = nn.UpsamplingBilinear2d(scale_factor=2)
+        self.upsample = nn.UpsamplingBilinear2d(scale_factor=2)
 
     def forward(self, x):
         arr_x = []
         for i in range(7):
-            x = self.Encoder[f'layer_{i}'](x)
+            x = self.encoder[f'layer_{i}'](x)
             arr_x.append(x)
 
 
@@ -137,11 +137,11 @@ class MultilevelAttributesEncoder(nn.Module):
         arr_y.append(arr_x[6])
         y = arr_x[6]
         for i in range(6):
-            y = self.Decoder[f'layer_{i}'](y)
+            y = self.decoder[f'layer_{i}'](y)
             y = torch.cat((y, arr_x[5-i]), 1)
             arr_y.append(y)
 
-        arr_y.append(self.Upsample(y))
+        arr_y.append(self.upsample(y))
 
         return arr_y
 

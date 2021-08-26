@@ -89,7 +89,7 @@ def train():
         discriminator.load_state_dict(torch.load(disc_ckpt_path, map_location=torch.device('cpu')), strict=False)
 
     # Face embedding model
-    dataset = FaceEmbeddingDataset(['data/ffhq'], same_prob=0.8)
+    dataset = FaceEmbeddingDataset(args.data_dir.split(','), same_prob=0.8)
     dataloader = DataLoader(dataset,
                             batch_size=batch_size,
                             shuffle=True,
@@ -102,83 +102,79 @@ def train():
     for epoch in range(0, max_epoch):
         for iteration, data in enumerate(dataloader):
             start_time = time.time()
-            Xs, Xt, same_person = data
-            Xs = Xs.to(device)
-            Xt = Xt.to(device)
+            source_images, target_images, same_person = data
+            source_images = source_images.to(device)
+            target_images = target_images.to(device)
             same_person = same_person.to(device)
 
             # Identity encoder
             with torch.no_grad():
-                embed = arcface(F.interpolate(Xs, [112, 112], mode='bilinear', align_corners=True))
-
+                embeddings = arcface(
+                    F.interpolate(source_images, [112, 112], mode='bilinear', align_corners=True)
+                )
+            
             # Train generator
             gen_optimizer.zero_grad()
-            Y, Xt_attr = generator(Xt, embed)
+            fake_images, target_attributes = generator(target_images, embeddings)
+            fake_outputs = discriminator(fake_images)
 
-            disc_outputs = discriminator(Y)
-            L_adv = 0
-            for di in disc_outputs:
-                L_adv += hinge_loss(di[0], True)
+            # Adversarial loss
+            loss_adv = 0
+            for output in fake_outputs:
+                loss_adv += hinge_loss(output[0], positive=True)
             
-            Y_aligned = Y
-            ZY = arcface(F.interpolate(Y_aligned, [112, 112], mode='bilinear', align_corners=True))
-            L_id = (1 - torch.cosine_similarity(embed, ZY, dim=1)).mean()
+            # Identity loss
+            fake_embeddings = arcface(
+                F.interpolate(fake_images, [112, 112], mode='bilinear', align_corners=True)
+            )
+            loss_id = (1 - torch.cosine_similarity(embeddings, fake_embeddings, dim=1)).mean()
 
-            Y_attr = generator.get_attr(Y)
-            L_attr = 0
-            for i in range(len(Xt_attr)):
-                L_attr += torch.mean(torch.pow(Xt_attr[i] - Y_attr[i], 2).reshape(batch_size, -1), dim=1).mean()
-            L_attr /= 2.0
-            L_rec = torch.sum(0.5 * torch.mean(torch.pow(Y - Xt, 2).reshape(batch_size, -1), dim=1) * same_person) / (same_person.sum() + 1e-6)
+            # Attributes loss
+            fake_attributes = generator.get_attr(fake_images)
+            loss_attr = 0
+            for i in range(len(target_attributes)):
+                loss_attr += torch.mean(torch.pow(target_attributes[i] - fake_attributes[i], 2).reshape(batch_size, -1), dim=1).mean()
+            
+            # Reconstruction loss
+            loss_recon = torch.sum(0.5 * torch.mean(torch.pow(fake_images - target_images, 2).reshape(batch_size, -1), dim=1) * same_person) / (same_person.sum() + 1e-6)
 
-            lossgenerator = 1*L_adv + 10*L_attr + 5*L_id + 10*L_rec
-            if n_gpus > 1:
-                with amp.scale_loss(lossgenerator, gen_optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                lossgenerator.backward()
-
+            loss_g = 1 * loss_adv + 10 * loss_attr + 5 * loss_id + 10 * loss_recon
+            loss_g.backward()
             gen_optimizer.step()
 
-            # train discriminator
+            # Train discriminator
             disc_optimizer.zero_grad()
-            fake_discriminator = discriminator(Y.detach())
+            fake_outputs = discriminator(fake_images.detach())
             loss_fake = 0
-            for di in fake_discriminator:
-                loss_fake += hinge_loss(di[0], False)
-
-            true_discriminator = discriminator(Xs)
+            for output in fake_outputs:
+                loss_fake += hinge_loss(output[0], positive=False)
+            
+            true_outputs = discriminator(source_images)
             loss_true = 0
-            for di in true_discriminator:
-                loss_true += hinge_loss(di[0], True)
-
-            lossdiscriminator = 0.5*(loss_true.mean() + loss_fake.mean())
-
-            if n_gpus > 1:
-                with amp.scale_loss(lossdiscriminator, disc_optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                lossdiscriminator.backward()
-
+            for output in true_outputs:
+                loss_true += hinge_loss(output[0], positive=True)
+            loss_d = 0.5 * (loss_fake.mean() + loss_fake.mean())
+            loss_d.backward()
             disc_optimizer.step()
+
             batch_time = time.time() - start_time
             if (iteration + 1) % show_step == 0:
-                image = make_image(Xs, Xt, Y)
-                vis.image(image[::-1, :, :], opts={'title': 'result'}, win='result')
-                cv2.imwrite('./gen_images/latest.jpg', image.transpose([1,2,0]))
+                image = make_image(source_images, target_images, Y)
+                # vis.image(image[::-1, :, :], opts={'title': 'result'}, win='result')
+                cv2.imwrite(os.path.join(args.logdir, 'latest.jpg'), image.transpose([1,2,0]))
 
-            print(f'[Epoch {epoch}/{max_epoch}, iter {iteration}/{len(dataloader)}] - '
-                  f'discriminator_loss: {lossdiscriminator.item()} - generator_loss: {lossgenerator.item()} - Time: {batch_time}s - '
-                  f'L_adv: {L_adv.item()} -  L_id: {L_id.item()} - L_attr: {L_attr.item()} - L_rec: {L_rec.item()}')
+            print(f'[Epoch {epoch}/{max_epoch} {iteration} / {len(dataloader)}] '
+                  f'loss_d: {loss_d.item()} - loss_g: {loss_g.item()} - batch_time: {batch_time}s - '
+                  f'loss_adv: {loss_adv.item()} - loss_id: {loss_id.item()} - '
+                  f'loss_attr: {loss_attr.item()} - loss_recon: {loss_recon.item()}')
             if (iteration + 1) % 1000 == 0:
                 torch.save(generator.state_dict(), gen_ckpt_path)
                 torch.save(discriminator.state_dict(), disc_ckpt_path)
-                print(f'Saved generator as {gen_ckpt_path}')
-                print(f'Saved discriminator as {disc_ckpt_path}')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', type=str, help='Path to images directory')
     parser.add_argument('--weights', type=str, default=None,
                         help='Path to pretrained weights')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
