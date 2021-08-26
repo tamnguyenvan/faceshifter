@@ -64,6 +64,7 @@ def train():
     # Build ArcFace model
     print('Creating ArcFace model...')
     arcface = get_model(arcface_backbone, fp16=False)
+    arcface.to(device)
     arcface.eval()
     arcface.load_state_dict(torch.load(args.arcface_weights, map_location=device), strict=False)
 
@@ -159,7 +160,7 @@ def train():
 
             batch_time = time.time() - start_time
             if (iteration + 1) % show_step == 0:
-                image = make_image(source_images, target_images, Y)
+                image = make_image(source_images, target_images, fake_images)
                 # vis.image(image[::-1, :, :], opts={'title': 'result'}, win='result')
                 cv2.imwrite(os.path.join(args.logdir, 'latest.jpg'), image.transpose([1,2,0]))
 
