@@ -1,0 +1,5 @@
+torch==19.0
+torchvision==0.10.0
+opencv-python==4.5.3.56
+visdom==0.1.8.9
+apex
