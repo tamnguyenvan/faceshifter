@@ -11,7 +11,11 @@ import torch.nn.functional as F
 import torch
 import torchvision
 from torch.utils.data import DataLoader 
-# from apex import amp
+try:
+    from apex import amp
+    APEX_AVAILABLE = True
+except (ModuleNotFoundError, ImportError):
+    APEX_AVAILABLE = False
 
 from models.aei_net import AEINet
 from models.multiscale_discriminator import MultiscaleDiscriminator
@@ -47,7 +51,6 @@ def make_image(Xs, Xt, Y):
 
 def train():
     # Settings
-    # vis = visdom.Visdom(server='127.0.0.1', env='faceshifter', port=8099)
     batch_size = args.batch_size
     lr_generator = args.g_lr
     lr_discriminator = args.d_lr
@@ -78,7 +81,7 @@ def train():
     gen_optimizer = optim.Adam(generator.parameters(), lr=lr_generator, betas=(0, 0.999))
     disc_optimizer = optim.Adam(discriminator.parameters(), lr=lr_discriminator, betas=(0, 0.999))
 
-    if n_gpus > 1:
+    if APEX_AVAILABLE:
         generator, gen_optimizer = amp.initialize(generator, gen_optimizer)
         discriminator, disc_optimizer = amp.initialize(discriminator, disc_optimizer)
 
@@ -134,13 +137,17 @@ def train():
             fake_attributes = generator.get_attr(fake_images)
             loss_attr = 0
             for i in range(len(target_attributes)):
-                loss_attr += torch.mean(torch.pow(target_attributes[i] - fake_attributes[i], 2).reshape(batch_size, -1), dim=1).mean()
+                loss_attr += mse_loss(target_attributes[i], fake_attributes[i])
             
             # Reconstruction loss
             loss_recon = torch.sum(0.5 * torch.mean(torch.pow(fake_images - target_images, 2).reshape(batch_size, -1), dim=1) * same_person) / (same_person.sum() + 1e-6)
 
             loss_g = 1 * loss_adv + 10 * loss_attr + 5 * loss_id + 10 * loss_recon
-            loss_g.backward()
+            if APEX_AVAILABLE:
+                with amp.scale_loss(loss_g, gen_optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss_g.backward()
             gen_optimizer.step()
 
             # Train discriminator
@@ -155,13 +162,16 @@ def train():
             for output in true_outputs:
                 loss_true += hinge_loss(output[0], positive=True)
             loss_d = 0.5 * (loss_fake.mean() + loss_fake.mean())
-            loss_d.backward()
+            if APEX_AVAILABLE:
+                with amp.scaled_loss(loss_d, disc_optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss_d.backward()
             disc_optimizer.step()
 
             batch_time = time.time() - start_time
             if (iteration + 1) % show_step == 0:
                 image = make_image(source_images, target_images, fake_images)
-                # vis.image(image[::-1, :, :], opts={'title': 'result'}, win='result')
                 cv2.imwrite(os.path.join(args.logdir, 'latest.jpg'), image.transpose([1,2,0]))
 
             print(f'[Epoch {epoch}/{max_epoch} {iteration} / {len(dataloader)}] '
