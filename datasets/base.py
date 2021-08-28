@@ -44,7 +44,7 @@ class FaceEmbeddingDataset(Dataset):
         image_path = self.image_paths[idx]
         Xs = Image.open(image_path).convert('RGB')
 
-        if random.random() > self.same_prob:
+        if random.random() < self.same_prob:
             image_path = random.choice(self.image_paths)
             Xt = Image.open(image_path).convert('RGB')
             same_person = 0

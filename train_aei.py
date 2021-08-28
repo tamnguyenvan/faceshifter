@@ -4,7 +4,7 @@ import os
 import time
 import argparse
 
-import cv2
+import numpy as np
 import visdom
 import torch.optim as optim
 import torch.nn.functional as F
@@ -21,6 +21,7 @@ from models.aei_net import AEINet
 from models.multiscale_discriminator import MultiscaleDiscriminator
 from datasets.base import FaceEmbeddingDataset
 from external.arcface_torch.backbones import get_model
+from PIL import Image
 
 
 def hinge_loss(X, positive=True):
@@ -58,7 +59,7 @@ def train():
     arcface_backbone = args.arcface_backbone
     gpus = args.gpus.split(',')
     n_gpus = len(gpus)
-    show_step = 10
+    show_step = 100
     if torch.cuda.is_available():
         device = torch.device('cuda:0')
     else:
@@ -138,7 +139,7 @@ def train():
             loss_attr = 0
             for i in range(len(target_attributes)):
                 loss_attr += mse_loss(target_attributes[i], fake_attributes[i])
-            
+
             # Reconstruction loss
             loss_recon = torch.sum(0.5 * torch.mean(torch.pow(fake_images - target_images, 2).reshape(batch_size, -1), dim=1) * same_person) / (same_person.sum() + 1e-6)
 
@@ -148,37 +149,48 @@ def train():
                     scaled_loss.backward()
             else:
                 loss_g.backward()
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=50, norm_type=2)
             gen_optimizer.step()
 
             # Train discriminator
-            disc_optimizer.zero_grad()
-            fake_outputs = discriminator(fake_images.detach())
-            loss_fake = 0
-            for output in fake_outputs:
-                loss_fake += hinge_loss(output[0], positive=False)
-            
-            true_outputs = discriminator(source_images)
-            loss_true = 0
-            for output in true_outputs:
-                loss_true += hinge_loss(output[0], positive=True)
-            loss_d = 0.5 * (loss_fake.mean() + loss_fake.mean())
-            if APEX_AVAILABLE:
-                with amp.scaled_loss(loss_d, disc_optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss_d.backward()
-            disc_optimizer.step()
+            if (iteration == 0 or iteration % 3 == 0):
+                disc_optimizer.zero_grad()
+                fake_outputs = discriminator(fake_images.detach())
+                loss_fake = 0
+                for output in fake_outputs:
+                    loss_fake += hinge_loss(output[0], positive=False)
+                
+                true_outputs = discriminator(source_images)
+                loss_true = 0
+                for output in true_outputs:
+                    loss_true += hinge_loss(output[0], positive=True)
+                loss_d = 0.5 * (loss_fake.mean() + loss_true.mean())
+                if APEX_AVAILABLE:
+                    with amp.scaled_loss(loss_d, disc_optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    loss_d.backward()
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=50, norm_type=2)
+                disc_optimizer.step()
 
             batch_time = time.time() - start_time
             if (iteration + 1) % show_step == 0:
                 image = make_image(source_images, target_images, fake_images)
-                cv2.imwrite(os.path.join(args.logdir, 'latest.jpg'), image.transpose([1,2,0]))
+                if not os.path.isdir(args.logdir):
+                    os.makedirs(args.logdir, exist_ok=True)
+                image = np.clip(image * 255, 0, 255).astype('uint8')
+                image_pil = Image.fromarray(image.transpose([1, 2, 0]))
+                path = os.path.join(args.logdir, 'latest.jpg')
+                image_pil.save(path)
 
-            print(f'[Epoch {epoch}/{max_epoch} {iteration} / {len(dataloader)}] '
-                  f'loss_d: {loss_d.item()} - loss_g: {loss_g.item()} - batch_time: {batch_time}s - '
-                  f'loss_adv: {loss_adv.item()} - loss_id: {loss_id.item()} - '
-                  f'loss_attr: {loss_attr.item()} - loss_recon: {loss_recon.item()}')
+            if (iteration + 1) % 10 == 0:
+                print(f'[Epoch {epoch+1}/{max_epoch} iter {iteration+1}/{len(dataloader)}] '
+                    f'loss_d: {loss_d.item():.5f} - loss_g: {loss_g.item():.5f} - batch_time: {batch_time:.2f}s - '
+                    f'loss_adv: {loss_adv.item():.5f} - loss_id: {loss_id.item():.5f} - '
+                    f'loss_attr: {loss_attr.item():.5f} - loss_recon: {loss_recon.item():.5f}')
             if (iteration + 1) % 1000 == 0:
+                if not os.path.isdir(args.ckpt_dir):
+                    os.makedirs(args.ckpt_dir, exist_ok=True)
                 torch.save(generator.state_dict(), gen_ckpt_path)
                 torch.save(discriminator.state_dict(), disc_ckpt_path)
 
@@ -189,7 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--weights', type=str, default=None,
                         help='Path to pretrained weights')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
-    parser.add_argument('--g-lr', type=float, default=4e4,
+    parser.add_argument('--g-lr', type=float, default=4e-4,
                         help='generatorenerator learning rate')
     parser.add_argument('--d-lr', type=float, default=4e-4,
                         help='Discriminator learning rate')
