@@ -202,7 +202,7 @@ if __name__ == '__main__':
                         help='Path to pretrained weights')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
     parser.add_argument('--g-lr', type=float, default=4e-4,
-                        help='generatorenerator learning rate')
+                        help='Generator learning rate')
     parser.add_argument('--d-lr', type=float, default=4e-4,
                         help='Discriminator learning rate')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs')
